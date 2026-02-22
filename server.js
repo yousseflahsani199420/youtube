@@ -11,26 +11,21 @@ const { cleanupOldFiles } = require('./utils/cleanup');
 const app = express();
 const PORT = process.env.PORT || 3000;
 
-
 // Security middleware
-app.use(helmet({
-  contentSecurityPolicy: false, // Allow loading resources from different sources
-}));
+app.use(helmet({ contentSecurityPolicy: false }));
 
-// CORS - Allow your frontend domain
+// CORS - allow frontend domain
 app.use(cors({
-  origin: process.env.FRONTEND_URL || '*', // Change to your domain in production
-  methods: ['GET', 'POST'],
-  allowedHeaders: ['Content-Type', 'Authorization']
+  origin: '*',
+  methods: ['GET','POST'],
+  allowedHeaders: ['Content-Type','Authorization']
 }));
 
-// Rate limiting - prevent abuse
+// Rate limiting
 const limiter = rateLimit({
-  windowMs: 15 * 60 * 1000, // 15 minutes
-  max: 50, // limit each IP to 50 requests per windowMs
-  message: {
-    error: 'Too many requests, please try again later.'
-  }
+  windowMs: 15*60*1000,
+  max: 50,
+  message: { error: 'Too many requests, please try again later.' }
 });
 app.use('/api/', limiter);
 
@@ -38,60 +33,48 @@ app.use('/api/', limiter);
 app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ extended: true }));
 
-// Create downloads directory
-const downloadsDir = path.join(__dirname, 'downloads');
+// Downloads directory
+const downloadsDir = process.env.DOWNLOADS_DIR || path.join(__dirname,'downloads');
 fs.ensureDirSync(downloadsDir);
 
-// Static files - serve downloaded videos temporarily
+// Serve downloads statically
 app.use('/downloads', express.static(downloadsDir, {
   maxAge: '1h',
-  setHeaders: (res, path) => {
-    res.setHeader('Content-Disposition', 'attachment');
-  }
+  setHeaders: (res, path) => { res.setHeader('Content-Disposition','attachment'); }
 }));
 
 // Health check
-app.get('/api/health', (req, res) => {
-  res.json({ 
-    status: 'OK', 
-    timestamp: new Date().toISOString(),
-    version: '1.0.0'
-  });
+app.get('/api/health', (req,res) => {
+  res.json({ status:'OK', timestamp: new Date().toISOString(), version:'1.0.0' });
 });
 
 // Routes
 app.use('/api', downloadRoutes);
 
 // Error handling
-app.use((err, req, res, next) => {
+app.use((err, req,res,next) => {
   console.error('Error:', err);
-  res.status(500).json({
-    error: 'Internal server error',
-    message: process.env.NODE_ENV === 'development' ? err.message : 'Something went wrong'
+  res.status(500).json({ 
+    error:'Internal server error',
+    message: process.env.NODE_ENV==='development'? err.message : 'Something went wrong'
   });
 });
-// Serve frontend
-app.use(express.static(path.join(__dirname, 'public')));
 
-// Fallback for SPA or root page
-app.get('/', (req, res) => {
-  res.sendFile(path.join(__dirname, 'public', 'index.html'));
-});
-// 404 handler
-app.use((req, res) => {
-  res.status(404).json({ error: 'Endpoint not found' });
-});
+// Serve frontend
+app.use(express.static(path.join(__dirname,'public')));
+app.get('/', (req,res) => { res.sendFile(path.join(__dirname,'public','index.html')); });
+
+// 404
+app.use((req,res)=>res.status(404).json({ error:'Endpoint not found' }));
 
 // Start server
-app.listen(PORT, () => {
-  console.log(`\n🚀 YouTube Downloader API running on port ${PORT}`);
+app.listen(PORT, ()=> {
+  console.log(`🚀 YouTube Downloader API running on port ${PORT}`);
   console.log(`📁 Downloads directory: ${downloadsDir}`);
-  console.log(`🔧 Environment: ${process.env.NODE_ENV || 'development'}\n`);
+  console.log(`🔧 Environment: ${process.env.NODE_ENV||'development'}`);
 });
 
-// Cleanup old files every 30 minutes
-setInterval(() => {
-  cleanupOldFiles(downloadsDir, 30); // Delete files older than 30 minutes
-}, 30 * 60 * 1000);
+// Cleanup old files every 30 mins
+setInterval(()=>cleanupOldFiles(downloadsDir,60),30*60*1000);
 
 module.exports = app;

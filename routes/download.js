@@ -25,7 +25,6 @@ function isValidYouTubeUrl(url) {
 // Pick closest available video quality
 function pickQuality(availableQualities, requestedQuality) {
   if (availableQualities.includes(requestedQuality)) return requestedQuality;
-  // fallback: pick highest available
   return availableQualities[0] || '720p';
 }
 
@@ -59,24 +58,25 @@ router.post('/download', async (req, res) => {
     if (!url) return res.status(400).json({ error: 'URL is required' });
     if (!isValidYouTubeUrl(url)) return res.status(400).json({ error: 'Invalid YouTube URL' });
 
-    const allowedFormats = ['mp4', 'mp3', 'webm'];
+    const allowedFormats = ['mp4', 'mp3', 'webm', 'm4a'];
     const selectedFormat = format || 'mp4';
     if (!allowedFormats.includes(selectedFormat)) {
-      return res.status(400).json({ error: 'Invalid format. Allowed: mp4, mp3, webm' });
+      return res.status(400).json({ error: 'Invalid format. Allowed: mp4, mp3, webm, m4a' });
     }
 
     // Get video info
     const info = await getVideoInfo(url);
 
-    // Pick closest available quality for video downloads
     let finalQuality = quality || '720p';
-    if (selectedFormat !== 'mp3') {
+    // Only pick quality for video downloads
+    if (selectedFormat !== 'mp3' && selectedFormat !== 'm4a') {
       const availableQualities = info.formats.video.map(f => f.quality).filter(Boolean);
       finalQuality = pickQuality(availableQualities, finalQuality);
     }
 
     // Generate output path
     const downloadId = uuidv4();
+    const safeTitle = sanitize(info.title);
     const outputPath = path.join(downloadsDir, `${downloadId}.${selectedFormat}`);
 
     // Start download
@@ -118,13 +118,7 @@ router.get('/file/:downloadId', async (req, res) => {
     res.setHeader('Content-Type', 'application/octet-stream');
     res.setHeader('Content-Disposition', `attachment; filename="${file}"`);
 
-    const stream = fs.createReadStream(filePath);
-    stream.pipe(res);
-
-    // Optional: delete after sending
-    stream.on('close', () => {
-      // fs.remove(filePath).catch(console.error);
-    });
+    fs.createReadStream(filePath).pipe(res);
 
   } catch (error) {
     console.error('File download error:', error);
