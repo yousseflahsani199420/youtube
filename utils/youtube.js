@@ -1,29 +1,30 @@
 const ytdl = require('@distube/ytdl-core');
 const ffmpeg = require('fluent-ffmpeg');
+const ffmpegPath = require('@ffmpeg-installer/ffmpeg').path;
 const fs = require('fs-extra');
 const sanitize = require('sanitize-filename');
 
-// Global download progress
+ffmpeg.setFfmpegPath(ffmpegPath);
+
+// Global download progress tracker
 if (!global.downloadProgress) {
   global.downloadProgress = {};
 }
 
 /**
- * Get video info from YouTube URL
+ * GET VIDEO INFO
  */
 async function getVideoInfo(url) {
   try {
     const info = await ytdl.getInfo(url);
     const videoDetails = info.videoDetails;
 
-    // Video+audio formats
     const videoFormats = info.formats
       .filter(f => f.hasVideo && f.hasAudio)
       .sort((a, b) => (b.height || 0) - (a.height || 0));
 
     const qualities = [...new Set(videoFormats.map(f => f.qualityLabel))].filter(Boolean);
 
-    // Audio-only formats
     const audioFormats = info.formats
       .filter(f => !f.hasVideo && f.hasAudio)
       .sort((a, b) => (b.audioBitrate || 0) - (a.audioBitrate || 0));
@@ -47,13 +48,15 @@ async function getVideoInfo(url) {
         audio: audioFormats.slice(0, 5)
       }
     };
-  } catch (error) {
-    throw new Error(`Failed to get video info: ${error.message}`);
+
+  } catch (err) {
+    throw new Error(`Failed to get video info: ${err.message}`);
   }
 }
 
+
 /**
- * Download video or audio
+ * DOWNLOAD VIDEO OR AUDIO
  */
 async function downloadVideo({ url, outputPath, format, downloadId }) {
   return new Promise(async (resolve, reject) => {
@@ -71,13 +74,15 @@ async function downloadVideo({ url, outputPath, format, downloadId }) {
 
       let selectedFormat;
 
+      // AUDIO
       if (format === 'mp3' || format === 'm4a') {
-        // Audio-only
         selectedFormat = info.formats
           .filter(f => !f.hasVideo && f.hasAudio)
           .sort((a, b) => (b.audioBitrate || 0) - (a.audioBitrate || 0))[0];
-      } else {
-        // Video+audio
+      }
+
+      // VIDEO
+      else {
         selectedFormat = info.formats
           .filter(f => f.hasVideo && f.hasAudio)
           .sort((a, b) => (b.height || 0) - (a.height || 0))[0];
@@ -87,15 +92,21 @@ async function downloadVideo({ url, outputPath, format, downloadId }) {
         return reject(new Error('No suitable format found'));
       }
 
-      const streamOptions = { format: selectedFormat, highWaterMark: 1024 * 1024 * 2 };
-      const videoStream = ytdl(url, streamOptions);
+      const videoStream = ytdl(url, {
+        format: selectedFormat,
+        highWaterMark: 1024 * 1024 * 2
+      });
 
       let downloadedBytes = 0;
       const totalBytes = parseInt(selectedFormat.contentLength) || 0;
 
       videoStream.on('data', chunk => {
         downloadedBytes += chunk.length;
-        const progress = totalBytes ? Math.round((downloadedBytes / totalBytes) * 100) : 0;
+
+        const progress = totalBytes
+          ? Math.round((downloadedBytes / totalBytes) * 100)
+          : 0;
+
         global.downloadProgress[downloadId] = {
           ...global.downloadProgress[downloadId],
           status: 'downloading',
@@ -110,35 +121,53 @@ async function downloadVideo({ url, outputPath, format, downloadId }) {
         reject(new Error(`Download failed: ${err.message}`));
       });
 
+
+      /**
+       * AUDIO CONVERSION
+       */
       if (format === 'mp3' || format === 'm4a') {
-        // Convert audio using ffmpeg
+
         global.downloadProgress[downloadId].status = 'converting';
 
         ffmpeg(videoStream)
-          .toFormat(format)
+          .audioCodec(format === 'mp3' ? 'libmp3lame' : 'aac')
           .audioBitrate(format === 'mp3' ? 192 : 256)
+          .format(format)
           .on('progress', p => {
-            global.downloadProgress[downloadId].convertProgress = Math.round(p.percent);
+            if (p.percent)
+              global.downloadProgress[downloadId].convertProgress = Math.round(p.percent);
           })
           .on('end', () => {
             global.downloadProgress[downloadId].status = 'completed';
             global.downloadProgress[downloadId].progress = 100;
-            resolve({ filename: `${title}.${format}`, path: outputPath });
+
+            resolve({
+              filename: `${title}.${format}`,
+              path: outputPath
+            });
           })
           .on('error', err => {
             global.downloadProgress[downloadId].status = 'error';
             reject(new Error(`Audio conversion failed: ${err.message}`));
           })
           .save(outputPath);
-      } else {
-        // Video download
+      }
+
+      /**
+       * VIDEO DOWNLOAD
+       */
+      else {
         const writeStream = fs.createWriteStream(outputPath);
         videoStream.pipe(writeStream);
 
         writeStream.on('finish', () => {
           global.downloadProgress[downloadId].status = 'completed';
           global.downloadProgress[downloadId].progress = 100;
-          resolve({ filename: `${title}.${format}`, path: outputPath });
+
+          resolve({
+            filename: `${title}.${format}`,
+            path: outputPath
+          });
         });
 
         writeStream.on('error', err => {
@@ -147,26 +176,29 @@ async function downloadVideo({ url, outputPath, format, downloadId }) {
         });
       }
 
-    } catch (error) {
-      if (global.downloadProgress[downloadId]) {
+    } catch (err) {
+      if (global.downloadProgress[downloadId])
         global.downloadProgress[downloadId].status = 'error';
-      }
-      reject(error);
+
+      reject(err);
     }
   });
 }
 
+
 /**
- * Format duration in HH:MM:SS or MM:SS
+ * FORMAT DURATION
  */
 function formatDuration(seconds) {
   const hrs = Math.floor(seconds / 3600);
   const mins = Math.floor((seconds % 3600) / 60);
   const secs = seconds % 60;
+
   return hrs > 0
     ? `${hrs}:${mins.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`
-    : `${mins}:${secs.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`;
+    : `${mins}:${secs.toString().padStart(2, '0')}`;
 }
+
 
 module.exports = {
   getVideoInfo,

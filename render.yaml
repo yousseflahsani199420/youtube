@@ -13,4 +13,8 @@ services:
     disk:
       name: downloads
       mountPath: /opt/render/project/src/downloads
+<<<<<<< HEAD
       sizeGB: 1
+=======
+      sizeGB: 1
+>>>>>>> bfd15a1 (Update fixes)
