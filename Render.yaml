@@ -3,15 +3,13 @@ services:
     name: youtube-downloader
     runtime: node
     plan: free
-    buildCommand: npm install
+    buildCommand: ./scripts/install-ffmpeg.sh && npm install
     startCommand: node server.js
     envVars:
       - key: NODE_ENV
         value: production
       - key: PORT
         value: 10000
-      - key: DOWNLOADS_DIR
-        value: /opt/render/project/src/downloads
     disk:
       name: downloads
       mountPath: /opt/render/project/src/downloads

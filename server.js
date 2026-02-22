@@ -10,9 +10,10 @@ const { cleanupOldFiles } = require('./utils/cleanup');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
-
 // Security middleware
 app.use(helmet({ contentSecurityPolicy: false }));
+
+
 
 // CORS - allow frontend domain
 app.use(cors({
@@ -24,7 +25,7 @@ app.use(cors({
 // Rate limiting
 const limiter = rateLimit({
   windowMs: 15*60*1000,
-  max: 50,
+  max: 200,
   message: { error: 'Too many requests, please try again later.' }
 });
 app.use('/api/', limiter);
@@ -75,6 +76,5 @@ app.listen(PORT, ()=> {
 });
 
 // Cleanup old files every 30 mins
-setInterval(()=>cleanupOldFiles(downloadsDir,60),30*60*1000);
-
+setInterval(()=>cleanupOldFiles(downloadsDir,5),5*60*1000);
 module.exports = app;
