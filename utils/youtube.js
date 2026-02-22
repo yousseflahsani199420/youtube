@@ -1,171 +1,139 @@
-const ytdl = require('@distube/ytdl-core');
+// utils/youtube.js
+const ytdl = require('ytdl-core');
+const ffmpeg = require('fluent-ffmpeg');
 const fs = require('fs-extra');
+const path = require('path');
 const sanitize = require('sanitize-filename');
 
-// Remove duplicate: const ytdl = require('@distube/ytdl-core');
+// -------------------- FFMPEG SETUP --------------------
+let ffmpegPath = process.env.FFMPEG_PATH || null;
+let ffprobePath = process.env.FFPROBE_PATH || null;
 
-// Set user agent to avoid 403
-const agent = ytdl.createAgent([
-  {
-    domain: "youtube.com",
-    expirationDate: Date.now() + 1000 * 60 * 60 * 24 * 365,
-    hostOnly: false,
-    httpOnly: false,
-    name: "CONSENT",
-    path: "/",
-    sameSite: "no_restriction",
-    secure: true,
-    value: "YES+ES.en+20190818-16-0"
-  }
-]);
+// For Render / Unix
+if (!ffmpegPath) ffmpegPath = process.platform === 'win32' ? 'ffmpeg' : '/usr/local/bin/ffmpeg';
+if (!ffprobePath) ffprobePath = process.platform === 'win32' ? 'ffprobe' : '/usr/local/bin/ffprobe';
+
+ffmpeg.setFfmpegPath(ffmpegPath);
+ffmpeg.setFfprobePath(ffprobePath);
+
+// -------------------- GLOBAL DOWNLOAD PROGRESS --------------------
 if (!global.downloadProgress) global.downloadProgress = {};
 
+// -------------------- HELPER --------------------
+function formatDuration(seconds) {
+  const hrs = Math.floor(seconds / 3600);
+  const mins = Math.floor((seconds % 3600) / 60);
+  const secs = seconds % 60;
+  return hrs > 0
+    ? `${hrs}:${mins.toString().padStart(2,'0')}:${secs.toString().padStart(2,'0')}`
+    : `${mins}:${secs.toString().padStart(2,'0')}:${secs.toString().padStart(2,'0')}`;
+}
+
+// -------------------- GET VIDEO INFO --------------------
 async function getVideoInfo(url) {
   try {
-    // ADD AGENT HERE - Line 28
-    const info = await ytdl.getInfo(url, { agent });
+    const info = await ytdl.getInfo(url);
     const videoDetails = info.videoDetails;
-    
+
     const videoFormats = info.formats
       .filter(f => f.hasVideo && f.hasAudio)
       .sort((a, b) => (b.height || 0) - (a.height || 0));
-    
+
     const audioFormats = info.formats
       .filter(f => !f.hasVideo && f.hasAudio)
       .sort((a, b) => (b.audioBitrate || 0) - (a.audioBitrate || 0));
 
+    const qualities = [...new Set(videoFormats.map(f => f.qualityLabel))].filter(Boolean);
+
     return {
       id: videoDetails.videoId,
       title: sanitize(videoDetails.title),
+      description: videoDetails.description?.substring(0,200) + '...',
       duration: formatDuration(videoDetails.lengthSeconds),
+      durationSeconds: parseInt(videoDetails.lengthSeconds),
       thumbnail: videoDetails.thumbnails.pop()?.url,
-      author: videoDetails.author?.name || 'Unknown',
+      author: { name: videoDetails.author.name, channelUrl: videoDetails.author.channel_url },
       viewCount: videoDetails.viewCount,
-      formats: {
-        video: videoFormats.map(f => ({
-          itag: f.itag,
-          quality: f.qualityLabel,
-          container: f.container,
-          height: f.height
-        })),
-        audio: audioFormats.map(f => ({
-          itag: f.itag,
-          audioBitrate: f.audioBitrate,
-          container: f.container
-        }))
-      }
+      publishDate: videoDetails.publishDate,
+      qualities,
+      formats: { video: videoFormats.slice(0,10), audio: audioFormats.slice(0,5) }
     };
   } catch (err) {
-    console.error('Info error:', err);
-    throw err;
+    throw new Error(`Failed to get video info: ${err.message}`);
   }
 }
 
-async function downloadVideo({ url, outputPath, format, downloadId }) {
+// -------------------- DOWNLOAD VIDEO / AUDIO --------------------
+async function downloadVideo({ url, outputPath, format='mp4', downloadId }) {
   return new Promise(async (resolve, reject) => {
     try {
-      global.downloadProgress[downloadId] = {
-        status: 'starting',
-        progress: 0,
-        downloaded: 0,
-        total: 0
-      };
-
-      // ADD AGENT HERE - Line 75
-      const info = await ytdl.getInfo(url, { agent });
+      const info = await ytdl.getInfo(url);
       const title = sanitize(info.videoDetails.title);
 
+      global.downloadProgress[downloadId] = { status: 'starting', progress: 0 };
+
+      // Choose format
       let selectedFormat;
+      if (format === 'mp3' || format === 'm4a') {
+        selectedFormat = info.formats
+          .filter(f => !f.hasVideo && f.hasAudio)
+          .sort((a,b) => (b.audioBitrate||0)-(a.audioBitrate||0))[0];
+      } else {
+        selectedFormat = info.formats
+          .filter(f => f.hasVideo && f.hasAudio)
+          .sort((a,b) => (b.height||0)-(a.height||0))[0];
+      }
+
+      if (!selectedFormat) return reject(new Error('No suitable format found'));
+
+      const streamOptions = { format: selectedFormat, highWaterMark: 1 << 25 };
+      const videoStream = ytdl(url, streamOptions);
 
       if (format === 'mp3' || format === 'm4a') {
-        selectedFormat = ytdl.chooseFormat(info.formats, { 
-          quality: 'highestaudio',
-          filter: 'audioonly'
-        });
+        global.downloadProgress[downloadId].status = 'converting';
+
+        ffmpeg(videoStream)
+          .toFormat(format)
+          .audioBitrate(format==='mp3'?192:256)
+          .on('progress', p => {
+            global.downloadProgress[downloadId].progress = Math.round(p.percent || 0);
+          })
+          .on('end', () => {
+            global.downloadProgress[downloadId].status = 'completed';
+            global.downloadProgress[downloadId].progress = 100;
+            resolve({ filename: `${title}.${format}`, path: outputPath });
+          })
+          .on('error', err => {
+            global.downloadProgress[downloadId].status = 'error';
+            reject(new Error(`Conversion failed: ${err.message}`));
+          })
+          .save(outputPath);
       } else {
-        selectedFormat = ytdl.chooseFormat(info.formats, { 
-          quality: 'highest',
-          filter: 'audioandvideo'
+        const writeStream = fs.createWriteStream(outputPath);
+        videoStream.pipe(writeStream);
+
+        writeStream.on('finish', () => {
+          global.downloadProgress[downloadId].status = 'completed';
+          global.downloadProgress[downloadId].progress = 100;
+          resolve({ filename: `${title}.${format}`, path: outputPath });
+        });
+
+        writeStream.on('error', err => {
+          global.downloadProgress[downloadId].status = 'error';
+          reject(new Error(`Write failed: ${err.message}`));
         });
       }
 
-      if (!selectedFormat) {
-        throw new Error('No suitable format found');
-      }
-
-      global.downloadProgress[downloadId] = {
-        status: 'downloading',
-        progress: 0,
-        downloaded: 0,
-        total: parseInt(selectedFormat.contentLength) || 0
-      };
-
-      // ADD AGENT HERE - Line 102
-      const stream = ytdl(url, { 
-        format: selectedFormat,
-        agent: agent,  // <-- ADD THIS
-        highWaterMark: 1024 * 1024
-      });
-
-      const writeStream = fs.createWriteStream(outputPath);
-
-      let downloadedBytes = 0;
-      const totalBytes = parseInt(selectedFormat.contentLength) || 0;
-
-      stream.on('data', (chunk) => {
-        downloadedBytes += chunk.length;
-        const progress = totalBytes > 0 
-          ? Math.round((downloadedBytes / totalBytes) * 100) 
-          : Math.min(Math.round((downloadedBytes / (1024 * 1024)) * 10), 99);
-        
-        global.downloadProgress[downloadId] = {
-          status: 'downloading',
-          progress: progress,
-          downloaded: downloadedBytes,
-          total: totalBytes
-        };
-      });
-
-      stream.on('error', (err) => {
+      videoStream.on('error', err => {
         global.downloadProgress[downloadId].status = 'error';
-        writeStream.destroy();
-        reject(err);
+        reject(new Error(`Stream failed: ${err.message}`));
       });
 
-      writeStream.on('finish', () => {
-        global.downloadProgress[downloadId] = {
-          status: 'completed',
-          progress: 100,
-          downloaded: downloadedBytes,
-          total: totalBytes
-        };
-        resolve({ 
-          path: outputPath,
-          filename: `${title}.${format}`
-        });
-      });
-
-      writeStream.on('error', (err) => {
-        global.downloadProgress[downloadId].status = 'error';
-        reject(err);
-      });
-
-      stream.pipe(writeStream);
-
-    } catch(err) {
-      global.downloadProgress[downloadId] = {
-        status: 'error',
-        error: err.message
-      };
+    } catch (err) {
+      if (global.downloadProgress[downloadId]) global.downloadProgress[downloadId].status='error';
       reject(err);
     }
   });
-}
-
-function formatDuration(seconds) {
-  const mins = Math.floor(seconds / 60);
-  const secs = seconds % 60;
-  return `${mins}:${secs.toString().padStart(2, '0')}`;
 }
 
 module.exports = { getVideoInfo, downloadVideo };
