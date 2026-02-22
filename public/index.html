@@ -672,7 +672,7 @@
 
             const formatsDiv = document.getElementById('formats');
             formatsDiv.innerHTML = '';
-
+			
            const qualities = data.formats.video; // CORRECT - from API
             qualities.forEach(q => {
                 const quality = typeof q === 'string' ? q : q.quality;
