@@ -1,9 +1,8 @@
-services:
+    services:
   - type: web
     name: youtube-downloader
-    runtime: node
-    plan: free
-    buildCommand: ./scripts/install-ffmpeg.sh && npm install
+    env: node
+    buildCommand: npm install && apt-get update && apt-get install -y ffmpeg
     startCommand: node server.js
     envVars:
       - key: NODE_ENV
@@ -14,3 +13,5 @@ services:
       name: downloads
       mountPath: /opt/render/project/src/downloads
       sizeGB: 1
+
+  
